@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-serde = "1.0.215"
-warp = "0.3.7"
+serde = { version = "1.0", features = ["derive"] }
+time = { version = "0.3.36", features = ["serde"] }
+sqlx = { version = "0.8.2", features = ["chrono", "postgres", "runtime-tokio-rustls", "time", "bigdecimal"] }
+bigdecimal = { version = "0.4", features = ["serde"] }
 tokio = { version = "1.41.1", features = ["full"] }
 chrono = "0.4.38"
-env_logger = "0.11.5"
+warp = "0.3.7"
 dotenv = "0.15.0"
-sqlx = { version = "0.8.2", features = ["postgres", "runtime-tokio-native-tls"] }
+env_logger = "0.11.5"

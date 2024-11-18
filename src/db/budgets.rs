@@ -1,6 +1,7 @@
 use warp::Filter;
 use serde::{Serialize, Deserialize};
 use sqlx::postgres::PgPoolOptions;
+use crate::utils::{json_body, with_db};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Budget {
@@ -126,12 +127,4 @@ impl BudgetService {
 
         Ok(warp::reply::json(&format!("Budget with id {} deleted", id)))
     }
-}
-
-fn with_db(pool: sqlx::PgPool) -> impl Filter<Extract = (sqlx::PgPool,), Error = std::convert::Infallible> + Clone {
-    warp::any().map(move || pool.clone())
-}
-
-fn json_body() -> impl Filter<Extract = (NewBudget,), Error = warp::Rejection> + Clone {
-    warp::body::json()
 }

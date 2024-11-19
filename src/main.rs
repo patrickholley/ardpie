@@ -1,6 +1,7 @@
 mod db;
 mod utils;
 
+use std::env;
 use dotenv::dotenv;
 use db::{budgets, expenses, users, user_budgets};
 use warp::Filter;
@@ -9,8 +10,10 @@ use warp::Filter;
 async fn main() {
     dotenv().ok();
     env_logger::init();
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://trickyaudin@localhost:5432/ardcheese".to_string()
+    });
 
-    let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
     let budget_service = budgets::BudgetService::new(&database_url).await;
     let expense_service = expenses::ExpenseService::new(&database_url).await;
     let user_service = users::UserService::new(&database_url).await;

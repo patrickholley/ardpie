@@ -6,16 +6,12 @@ use crate::utils::{json_body, with_db};
 #[derive(Serialize, Deserialize, Debug)]
 struct Budget {
     id: i32,
-    userid: String,
     name: String,
-    addl_users: Option<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
 struct NewBudget {
-    userid: String,
     name: String,
-    addl_users: Option<Vec<String>>,
 }
 
 pub struct BudgetService {
@@ -71,7 +67,7 @@ impl BudgetService {
     }
 
     async fn handle_get_budgets(pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let budgets = sqlx::query_as!(Budget, "SELECT * FROM budgets")
+        let budgets = sqlx::query_as!(Budget, "SELECT id, name FROM budgets")
             .fetch_all(&pool)
             .await
             .map_err(|_| warp::reject())?;
@@ -80,7 +76,7 @@ impl BudgetService {
     }
 
     async fn handle_get_budget_with_id(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let budget = sqlx::query_as!(Budget, "SELECT * FROM budgets WHERE id = $1", id)
+        let budget = sqlx::query_as!(Budget, "SELECT id, name FROM budgets WHERE id = $1", id)
             .fetch_one(&pool)
             .await
             .map_err(|_| warp::reject())?;
@@ -91,10 +87,8 @@ impl BudgetService {
     async fn handle_create_budget(new_budget: NewBudget, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         let budget = sqlx::query_as!(
             Budget,
-            "INSERT INTO budgets (userid, name, addl_users) VALUES ($1, $2, $3) RETURNING id, userid, name, addl_users",
-            new_budget.userid,
-            new_budget.name,
-            new_budget.addl_users.as_deref()
+            "INSERT INTO budgets (name) VALUES ($1) RETURNING id, name",
+            new_budget.name
         )
             .fetch_one(&pool)
             .await
@@ -106,10 +100,8 @@ impl BudgetService {
     async fn handle_update_budget(id: i32, new_budget: NewBudget, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         let budget = sqlx::query_as!(
             Budget,
-            "UPDATE budgets SET userid = $1, name = $2, addl_users = $3 WHERE id = $4 RETURNING id, userid, name, addl_users",
-            new_budget.userid,
+            "UPDATE budgets SET name = $1 WHERE id = $2 RETURNING id, name",
             new_budget.name,
-            new_budget.addl_users.as_deref(),
             id
         )
             .fetch_one(&pool)
@@ -120,7 +112,10 @@ impl BudgetService {
     }
 
     async fn handle_delete_budget(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        sqlx::query!("DELETE FROM budgets WHERE id = $1", id)
+        sqlx::query!(
+        "DELETE FROM budgets WHERE id = $1",
+        id
+    )
             .execute(&pool)
             .await
             .map_err(|_| warp::reject())?;

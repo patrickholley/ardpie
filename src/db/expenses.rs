@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 use bigdecimal::BigDecimal;
 use time::Date;
 
+#[derive(Deserialize, Debug)]
+struct BudgetIdQuery {
+    budgetid: i32,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Expense {
     id: i32,
@@ -39,6 +44,13 @@ impl ExpenseService {
 
     pub fn routes(&self) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
         let pool = self.pool.clone();
+
+        let get_total_amount_by_budgetid = warp::path!("expenses" / "total")
+            .and(warp::get())
+            .and(warp::query::<BudgetIdQuery>())
+            .and(with_db(pool.clone()))
+            .and_then(Self::handle_get_total_amount_by_budgetid);
+
         let get_expenses = warp::path("expenses")
             .and(warp::get())
             .and(warp::query::<BudgetIdQuery>())
@@ -67,7 +79,8 @@ impl ExpenseService {
             .and(with_db(pool.clone()))
             .and_then(Self::handle_delete_expense);
 
-        get_expenses
+        get_total_amount_by_budgetid
+            .or(get_expenses)
             .or(get_expense_with_id)
             .or(create_expense)
             .or(update_expense)
@@ -133,9 +146,15 @@ impl ExpenseService {
 
         Ok(warp::reply::json(&format!("Expense with id {} deleted", id)))
     }
-}
 
-#[derive(Deserialize, Debug)]
-struct BudgetIdQuery {
-    budgetid: i32,
+    async fn handle_get_total_amount_by_budgetid(query: BudgetIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+        let result = sqlx::query!("SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE budgetid = $1", query.budgetid)
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| warp::reject())?;
+
+        let total = result.total.unwrap_or_else(|| BigDecimal::from(0));
+
+        Ok(warp::reply::json(&total))
+    }
 }

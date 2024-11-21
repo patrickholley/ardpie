@@ -102,7 +102,7 @@ impl BudgetService {
             "INSERT INTO budgets (name) VALUES ($1) RETURNING id, name",
             new_budget.name
         )
-            .fetch_one(&mut tx)
+            .fetch_one(&mut *tx)  // Correct usage of mutable transaction reference
             .await
             .map_err(|_| warp::reject())?;
 
@@ -110,7 +110,7 @@ impl BudgetService {
             "INSERT INTO user_budgets (userid, budgetid) VALUES ($1, $2)",
             query.userid, budget.id
         )
-            .execute(&mut tx)
+            .execute(&mut *tx)  // Correct usage of mutable transaction reference
             .await
             .map_err(|_| warp::reject())?;
 
@@ -140,7 +140,7 @@ impl BudgetService {
             "DELETE FROM expenses WHERE budgetid = $1",
             id
         )
-            .execute(&mut tx)
+            .execute(&mut *tx)
             .await
             .map_err(|_| warp::reject())?;
 
@@ -148,7 +148,7 @@ impl BudgetService {
             "DELETE FROM user_budgets WHERE budgetid = $1",
             id
         )
-            .execute(&mut tx)
+            .execute(&mut *tx)
             .await
             .map_err(|_| warp::reject())?;
 
@@ -156,7 +156,7 @@ impl BudgetService {
             "DELETE FROM budgets WHERE id = $1",
             id
         )
-            .execute(&mut tx)
+            .execute(&mut *tx)
             .await
             .map_err(|_| warp::reject())?;
 

@@ -1,39 +1,20 @@
-# Stage 1: Build the application
-FROM rust:1.82.0 as builder
+FROM lukemathwalker/cargo-chef:latest as chef
+WORKDIR /app
 
-# Set environment variables
-ENV SQLX_OFFLINE true
-
-# Create a new empty shell project
-RUN USER=root cargo new --bin myapp
-WORKDIR /myapp
-
-# Copy the Cargo.toml and Cargo.lock and download the dependencies
-COPY Cargo.toml Cargo.lock ./
+FROM chef AS planner
+COPY ./Cargo.toml ./Cargo.lock ./
 COPY ./src ./src
+RUN cargo chef prepare
 
-# Build the dependencies
+FROM chef AS builder
+COPY --from=planner /app/recipe.json .
+RUN cargo chef cook --release
+COPY . .
 RUN cargo build --release
+RUN mv ./target/release/ardpie ./app
 
-# Stage 2: Run the application
-FROM debian:bullseye-slim
-
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the build artifact from the builder stage
-COPY --from=builder /myapp/target/release/myapp /usr/local/bin/myapp
-
-# Copy the environment variables file
-COPY .env /myapp/.env
-
-# Set the working directory
-WORKDIR /myapp
-
-# Expose the application port (example: 8080)
-EXPOSE 8080
-
-# Run the binary
-CMD ["myapp"]
+FROM debian:stable-slim AS runtime
+WORKDIR /app
+COPY --from=builder /app/app /usr/local/bin/
+EXPOSE 2345
+ENTRYPOINT ["/usr/local/bin/app"]

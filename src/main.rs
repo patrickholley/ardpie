@@ -21,6 +21,6 @@ async fn main() {
     let routes = budget_service.routes().or(expense_service.routes().or(user_service.routes().or(user_budget_service.routes()))).with(warp::log("api"));
 
     warp::serve(routes)
-        .run(([127, 0, 0, 1], 2345))
+        .run(([0, 0, 0, 0], 2345))
         .await;
 }

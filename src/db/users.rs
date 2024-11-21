@@ -32,16 +32,10 @@ impl UserService {
     pub fn routes(&self) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
         let pool = self.pool.clone();
 
-        let get_users = warp::path("users")
-            .and(warp::get())
-            .and(warp::path::end())
-            .and(with_db(pool.clone()))
-            .and_then(Self::handle_get_users);
-
-        let get_user_with_id = warp::path!("users" / i32)
+        let get_user = warp::path!("users" / i32)
             .and(warp::get())
             .and(with_db(pool.clone()))
-            .and_then(Self::handle_get_user_with_id);
+            .and_then(Self::handle_get_user);
 
         let create_user = warp::path("users")
             .and(warp::post())
@@ -60,23 +54,13 @@ impl UserService {
             .and(with_db(pool.clone()))
             .and_then(Self::handle_delete_user);
 
-        get_users
-            .or(get_user_with_id)
+        get_user
             .or(create_user)
             .or(update_user)
             .or(delete_user)
     }
 
-    async fn handle_get_users(pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let users = sqlx::query_as!(User, "SELECT * FROM users")
-            .fetch_all(&pool)
-            .await
-            .map_err(|_| warp::reject())?;
-
-        Ok(warp::reply::json(&users))
-    }
-
-    async fn handle_get_user_with_id(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn handle_get_user(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         let user = sqlx::query_as!(User, "SELECT * FROM users WHERE id = $1", id)
             .fetch_one(&pool)
             .await
@@ -113,6 +97,30 @@ impl UserService {
     }
 
     async fn handle_delete_user(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+        // Step 1: Fetch all budget IDs associated with the user from the user_budgets table
+        let budgetids: Vec<i32> = sqlx::query!("SELECT budgetid FROM user_budgets WHERE userid = $1", id)
+            .fetch_all(&pool)
+            .await
+            .map_err(|_| warp::reject())?
+            .into_iter()
+            .map(|record| record.budgetid)
+            .collect();
+
+        // Step 2: Delete these budget entries from the budgets table
+        for budgetid in budgetids.iter() {
+            sqlx::query!("DELETE FROM budgets WHERE id = $1", budgetid)
+                .execute(&pool)
+                .await
+                .map_err(|_|  warp::reject())?;
+        }
+
+        // Step 3: Delete entries from the user_budgets table
+        sqlx::query!("DELETE FROM user_budgets WHERE userid = $1", id)
+            .execute(&pool)
+            .await
+            .map_err(|_| warp::reject())?;
+
+        // Step 4: Delete the user from the users table
         sqlx::query!("DELETE FROM users WHERE id = $1", id)
             .execute(&pool)
             .await

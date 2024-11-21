@@ -45,11 +45,11 @@ impl ExpenseService {
     pub fn routes(&self) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
         let pool = self.pool.clone();
 
-        let get_total_amount_by_budgetid = warp::path!("expenses" / "total")
+        let get_expenses_total = warp::path!("expenses" / "total")
             .and(warp::get())
             .and(warp::query::<BudgetIdQuery>())
             .and(with_db(pool.clone()))
-            .and_then(Self::handle_get_total_amount_by_budgetid);
+            .and_then(Self::handle_get_expenses_total);
 
         let get_expenses = warp::path("expenses")
             .and(warp::get())
@@ -57,10 +57,10 @@ impl ExpenseService {
             .and(with_db(pool.clone()))
             .and_then(Self::handle_get_expenses);
 
-        let get_expense_with_id = warp::path!("expenses" / i32)
+        let get_expense = warp::path!("expenses" / i32)
             .and(warp::get())
             .and(with_db(pool.clone()))
-            .and_then(Self::handle_get_expense_with_id);
+            .and_then(Self::handle_get_expense);
 
         let create_expense = warp::path("expenses")
             .and(warp::post())
@@ -79,12 +79,23 @@ impl ExpenseService {
             .and(with_db(pool.clone()))
             .and_then(Self::handle_delete_expense);
 
-        get_total_amount_by_budgetid
+        get_expenses_total
             .or(get_expenses)
-            .or(get_expense_with_id)
+            .or(get_expense)
             .or(create_expense)
             .or(update_expense)
             .or(delete_expense)
+    }
+
+    async fn handle_get_expenses_total(query: BudgetIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+        let result = sqlx::query!("SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE budgetid = $1", query.budgetid)
+            .fetch_one(&pool)
+            .await
+            .map_err(|_| warp::reject())?;
+
+        let total = result.total.unwrap_or_else(|| BigDecimal::from(0));
+
+        Ok(warp::reply::json(&total))
     }
 
     async fn handle_get_expenses(query: BudgetIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
@@ -96,7 +107,7 @@ impl ExpenseService {
         Ok(warp::reply::json(&expenses))
     }
 
-    async fn handle_get_expense_with_id(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn handle_get_expense(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         let expense = sqlx::query_as!(Expense, "SELECT * FROM expenses WHERE id = $1", id)
             .fetch_one(&pool)
             .await
@@ -145,16 +156,5 @@ impl ExpenseService {
             .map_err(|_| warp::reject())?;
 
         Ok(warp::reply::json(&format!("Expense with id {} deleted", id)))
-    }
-
-    async fn handle_get_total_amount_by_budgetid(query: BudgetIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let result = sqlx::query!("SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE budgetid = $1", query.budgetid)
-            .fetch_one(&pool)
-            .await
-            .map_err(|_| warp::reject())?;
-
-        let total = result.total.unwrap_or_else(|| BigDecimal::from(0));
-
-        Ok(warp::reply::json(&total))
     }
 }

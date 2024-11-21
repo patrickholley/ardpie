@@ -36,7 +36,7 @@ impl UserBudgetService {
 
         let remove_association = warp::path("user_budgets")
             .and(warp::delete())
-            .and(json_body())
+            .and(warp::query::<UserBudgetAssociation>())
             .and(with_db(pool.clone()))
             .and_then(Self::handle_remove_association)
             .with(warp::log("api::remove_association"));
@@ -63,17 +63,17 @@ impl UserBudgetService {
         }
     }
 
-    async fn handle_remove_association(association: UserBudgetAssociation, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn handle_remove_association(query: UserBudgetAssociation, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         match sqlx::query!(
             "DELETE FROM user_budgets WHERE userid = $1 AND budgetid = $2",
-            association.userid,
-            association.budgetid
+            query.userid,
+            query.budgetid
         )
             .execute(&pool)
             .await {
             Ok(_) => Ok(warp::reply::json(&format!(
                 "Removed association of user {} with budget {}",
-                association.userid, association.budgetid
+                query.userid, query.budgetid
             ))),
             Err(e) => {
                 eprintln!("Failed to delete association: {:?}", e);

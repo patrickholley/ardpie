@@ -13,9 +13,7 @@ async fn main() {
     let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
         "postgres://trickyaudin@localhost:5432/ardcheese".to_string()
     });
-    let auden_sylens = env::var("AUDEN_SYLENS").unwrap_or_else(|_| {
-        "http://localhost".to_string()
-    });
+    let auden_sylens = env::var("AUDEN_SYLENS").expect("AUDEN_SYLENS must be set");
 
     let budget_service = budgets::BudgetService::new(&database_url).await;
     let expense_service = expenses::ExpenseService::new(&database_url).await;
@@ -27,8 +25,6 @@ async fn main() {
         .allow_headers(vec!["Content-Type", "Authorization"])
         .allow_origins(vec![
             "https://ardfudge.ardmore.us",
-            "http://localhost",
-            "http://127.0.0.1",
             auden_sylens.as_str()
         ]);
 

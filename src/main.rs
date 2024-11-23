@@ -25,10 +25,12 @@ async fn main() {
     let cors = warp::cors()
         .allow_methods(vec!["GET", "POST", "PUT", "DELETE"])
         .allow_headers(vec!["Content-Type", "Authorization"])
-        .allow_origin("https://ardfudge.ardmore.us")
-        .allow_origin("http://localhost")
-        .allow_origin("http://127.0.0.1")
-        .allow_origin(auden_sylens.as_str());
+        .allow_origins(vec![
+            "https://ardfudge.ardmore.us",
+            "http://localhost",
+            "http://127.0.0.1",
+            auden_sylens.as_str()
+        ]);
 
     let routes = budget_service.routes()
         .or(expense_service.routes()

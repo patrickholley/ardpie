@@ -32,7 +32,7 @@ impl UserService {
     pub fn routes(&self) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
         let pool = self.pool.clone();
 
-        let get_user = warp::path!("users" / i32)
+        let get_user = warp::path!("users" / String)
             .and(warp::get())
             .and(with_db(pool.clone()))
             .and_then(Self::handle_get_user);
@@ -60,8 +60,8 @@ impl UserService {
             .or(delete_user)
     }
 
-    async fn handle_get_user(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let user = sqlx::query_as!(User, "SELECT * FROM users WHERE id = $1", id)
+    async fn handle_get_user(name: String, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+        let user = sqlx::query_as!(User, "SELECT * FROM users WHERE name = $1", name)
             .fetch_one(&pool)
             .await
             .map_err(|_| warp::reject())?;

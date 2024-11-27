@@ -1,17 +1,19 @@
-use warp::Filter;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use sqlx::postgres::PgPoolOptions;
+use warp::Filter;
 use crate::utils::{json_body, with_db};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Budget {
     id: i32,
     name: String,
+    settings: serde_json::Value,
 }
 
 #[derive(Deserialize, Debug)]
 struct NewBudget {
     name: String,
+    settings: serde_json::Value,
 }
 
 #[derive(Deserialize, Debug)]
@@ -73,11 +75,14 @@ impl BudgetService {
     }
 
     async fn handle_get_budgets(query: UserIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let budgets = sqlx::query_as!(Budget,
-            "SELECT b.id, b.name
+        let budgets = sqlx::query_as!(
+            Budget,
+            "SELECT b.id, b.name, b.settings
              FROM budgets b
              JOIN user_budgets ub ON b.id = ub.budgetid
-             WHERE ub.userid = $1", query.userid)
+             WHERE ub.userid = $1",
+            query.userid
+        )
             .fetch_all(&pool)
             .await
             .map_err(|_| warp::reject())?;
@@ -86,7 +91,11 @@ impl BudgetService {
     }
 
     async fn handle_get_budget(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let budget = sqlx::query_as!(Budget, "SELECT id, name FROM budgets WHERE id = $1", id)
+        let budget = sqlx::query_as!(
+            Budget,
+            "SELECT id, name, settings FROM budgets WHERE id = $1",
+            id
+        )
             .fetch_one(&pool)
             .await
             .map_err(|_| warp::reject())?;
@@ -99,8 +108,10 @@ impl BudgetService {
 
         let budget = sqlx::query_as!(
             Budget,
-            "INSERT INTO budgets (name) VALUES ($1) RETURNING id, name",
-            new_budget.name
+            "INSERT INTO budgets (name, settings) VALUES ($1, $2)
+             RETURNING id, name, settings",
+            new_budget.name,
+            new_budget.settings
         )
             .fetch_one(&mut *tx)
             .await
@@ -108,7 +119,8 @@ impl BudgetService {
 
         sqlx::query!(
             "INSERT INTO user_budgets (userid, budgetid) VALUES ($1, $2)",
-            query.userid, budget.id
+            query.userid,
+            budget.id
         )
             .execute(&mut *tx)
             .await
@@ -122,8 +134,10 @@ impl BudgetService {
     async fn handle_update_budget(id: i32, new_budget: NewBudget, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         let budget = sqlx::query_as!(
             Budget,
-            "UPDATE budgets SET name = $1 WHERE id = $2 RETURNING id, name",
+            "UPDATE budgets SET name = $1, settings = $2 WHERE id = $3
+             RETURNING id, name, settings",
             new_budget.name,
+            new_budget.settings,
             id
         )
             .fetch_one(&pool)
@@ -136,26 +150,17 @@ impl BudgetService {
     async fn handle_delete_budget(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         let mut tx = pool.begin().await.map_err(|_| warp::reject())?;
 
-        sqlx::query!(
-            "DELETE FROM expenses WHERE budgetid = $1",
-            id
-        )
+        sqlx::query!("DELETE FROM expenses WHERE budgetid = $1", id)
             .execute(&mut *tx)
             .await
             .map_err(|_| warp::reject())?;
 
-        sqlx::query!(
-            "DELETE FROM user_budgets WHERE budgetid = $1",
-            id
-        )
+        sqlx::query!("DELETE FROM user_budgets WHERE budgetid = $1", id)
             .execute(&mut *tx)
             .await
             .map_err(|_| warp::reject())?;
 
-        sqlx::query!(
-            "DELETE FROM budgets WHERE id = $1",
-            id
-        )
+        sqlx::query!("DELETE FROM budgets WHERE id = $1", id)
             .execute(&mut *tx)
             .await
             .map_err(|_| warp::reject())?;

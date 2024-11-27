@@ -1,5 +1,6 @@
 mod db;
 mod utils;
+mod auth;
 
 use std::env;
 use dotenv::dotenv;

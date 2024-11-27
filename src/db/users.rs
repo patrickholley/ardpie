@@ -8,6 +8,7 @@ use jsonwebtoken::{encode, Header, EncodingKey};
 use warp::http::StatusCode;
 use std::convert::Infallible;
 use std::env;
+use crate::auth::{with_auth, Claims};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct User {
@@ -34,10 +35,11 @@ struct LoginRequest {
     password: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct Claims {
-    sub: String,
-    exp: usize,
+#[derive(Serialize, Deserialize, Debug)]
+struct LoginResponse {
+    id: i32,
+    name: String,
+    token: String,
 }
 
 #[derive(Debug)]
@@ -63,11 +65,6 @@ impl UserService {
     pub fn routes(&self) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
         let pool = self.pool.clone();
 
-        let get_user = warp::path!("users" / String)
-            .and(warp::get())
-            .and(with_db(pool.clone()))
-            .and_then(Self::handle_get_user);
-
         let create_user = warp::path("users")
             .and(warp::post())
             .and(json_body())
@@ -76,12 +73,14 @@ impl UserService {
 
         let update_user = warp::path!("users" / i32)
             .and(warp::put())
+            .and(with_auth())
             .and(json_body())
             .and(with_db(pool.clone()))
             .and_then(Self::handle_update_user);
 
         let delete_user = warp::path!("users" / i32)
             .and(warp::delete())
+            .and(with_auth())
             .and(with_db(pool.clone()))
             .and_then(Self::handle_delete_user);
 
@@ -91,35 +90,20 @@ impl UserService {
             .and(with_db(pool))
             .and_then(Self::handle_login);
 
-        get_user
-            .or(create_user)
+        create_user
             .or(update_user)
             .or(delete_user)
             .or(login)
-    }
-
-    async fn handle_get_user(name: String, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let user = sqlx::query!("SELECT id, name FROM users WHERE name = $1", name)
-            .fetch_one(&pool)
-            .await
-            .map_err(|_| warp::reject::custom(MyError))?;
-
-        let user_response = UserResponse {
-            id: user.id,
-            name: user.name,
-        };
-
-        Ok(warp::reply::json(&user_response))
     }
 
     async fn handle_create_user(new_user: NewUser, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         let hashed_password = hash(&new_user.password, 4).map_err(|_| warp::reject::custom(MyError))?;
 
         let user = sqlx::query!(
-            "INSERT INTO users (name, password) VALUES ($1, $2) RETURNING id, name",
-            new_user.name,
-            hashed_password
-        )
+        "INSERT INTO users (name, password) VALUES ($1, $2) RETURNING id, name",
+        new_user.name,
+        hashed_password
+    )
             .fetch_one(&pool)
             .await
             .map_err(|_| warp::reject::custom(MyError))?;
@@ -129,18 +113,25 @@ impl UserService {
             name: user.name,
         };
 
-        Ok(warp::reply::json(&user_response))
+        Ok(warp::reply::with_status(warp::reply::json(&user_response), StatusCode::CREATED))
     }
 
-    async fn handle_update_user(id: i32, new_user: NewUser, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn handle_update_user(id: i32, claims: Claims, new_user: NewUser, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+        if id != claims.user_id {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&json!({"error": "Unauthorized"})),
+                StatusCode::UNAUTHORIZED,
+            ));
+        }
+
         let hashed_password = hash(&new_user.password, 4).map_err(|_| warp::reject::custom(MyError))?;
 
         let user = sqlx::query!(
-            "UPDATE users SET name = $1, password = $2 WHERE id = $3 RETURNING id, name",
-            new_user.name,
-            hashed_password,
-            id
-        )
+        "UPDATE users SET name = $1, password = $2 WHERE id = $3 RETURNING id, name",
+        new_user.name,
+        hashed_password,
+        id
+    )
             .fetch_one(& pool)
             .await
             .map_err(|_| warp::reject::custom(MyError))?;
@@ -150,10 +141,17 @@ impl UserService {
             name: user.name,
         };
 
-        Ok(warp::reply::json(&user_response))
+        Ok(warp::reply::with_status(warp::reply::json(&user_response), StatusCode::OK))
     }
 
-    async fn handle_delete_user(id: i32, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn handle_delete_user(id: i32, claims: Claims, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+        if id != claims.user_id {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&json!({"error": "Unauthorized"})),
+                StatusCode::UNAUTHORIZED,
+            ));
+        }
+
         // Step 1: Fetch budget IDs associated with user from user_budgets table
         let budgetids: Vec<i32> = sqlx::query!("SELECT budgetid FROM user_budgets WHERE userid = $1", id)
             .fetch_all(&pool)
@@ -191,11 +189,11 @@ impl UserService {
             .await
             .map_err(|_| warp::reject::custom(MyError))?;
 
-        Ok(warp::reply::json(&format!("User with id {} deleted", id)))
+        Ok(warp::reply::with_status(warp::reply::json(&format!("User with id {} deleted", id)), StatusCode::OK))
     }
 
     async fn handle_login(login: LoginRequest, pool: sqlx::PgPool) -> Result<impl warp::Reply, Infallible> {
-        let result = sqlx::query!("SELECT password FROM users WHERE name = $1", login.name)
+        let result = sqlx::query!("SELECT id, name, password FROM users WHERE name = $1", login.name)
             .fetch_one(&pool)
             .await;
 
@@ -204,12 +202,19 @@ impl UserService {
                 let hashed_password = record.password;
                 if verify(&login.password, &hashed_password).is_ok() {
                     let claims = Claims {
-                        sub: login.name,
+                        user_id: record.id,
                         exp: get_expires_at(),
                     };
                     let secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
                     let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref())).unwrap();
-                    return Ok(warp::reply::with_status(warp::reply::json(&json!({ "token": token })), StatusCode::OK));
+
+                    let login_response = LoginResponse {
+                        id: record.id,
+                        name: record.name,
+                        token,
+                    };
+
+                    return Ok(warp::reply::with_status(warp::reply::json(&login_response), StatusCode::OK));
                 }
                 Ok(warp::reply::with_status(warp::reply::json(&json!({"error": "Invalid credentials"})), StatusCode::UNAUTHORIZED))
             }

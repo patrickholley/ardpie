@@ -1,4 +1,4 @@
-use jsonwebtoken::{DecodingKey, Validation};
+use jsonwebtoken::{DecodingKey, Validation, decode};
 use serde::{Deserialize, Serialize};
 use warp::{header, reject, Filter, Rejection};
 
@@ -12,8 +12,9 @@ pub fn with_auth() -> impl Filter<Extract = (Claims,), Error = Rejection> + Clon
     header::header::<String>("authorization")
         .and_then(|token: String| async move {
             let token = token.replace("Bearer ", "");
-            match jsonwebtoken::decode::<Claims>(&token, &DecodingKey::from_secret("secret".as_ref()), &Validation::default()) {
-                Ok(c) => Ok(c.claims),
+            let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "default_secret".to_string());
+            match decode::<Claims>(&token, &DecodingKey::from_secret(secret.as_ref()), &Validation::default()) {
+                Ok(data) => Ok(data.claims),
                 Err(_) => Err(reject::custom(AuthError)),
             }
         })

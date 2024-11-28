@@ -74,6 +74,7 @@ impl ExpenseService {
 
         let create_expense = warp::path("expenses")
             .and(warp::post())
+            .and(with_auth())
             .and(json_body())
             .and(with_db(pool.clone()))
             .and_then(Self::handle_create_expense);
@@ -149,7 +150,14 @@ impl ExpenseService {
         Ok(warp::reply::with_status(warp::reply::json(&expense), StatusCode::OK))
     }
 
-    async fn handle_create_expense(new_expense: NewExpense, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn handle_create_expense(claims: Claims, new_expense: NewExpense, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+        if !Self::user_owns_budget(claims.user_id, new_expense.budgetid, &pool).await? {
+            return Ok(warp::reply::with_status(
+                warp::reply::json(&json!({"error": "Unauthorized"})),
+                StatusCode::UNAUTHORIZED,
+            ));
+        }
+
         let expense = sqlx::query_as!(
             Expense,
             "INSERT INTO expenses (budgetid, date, description, amount) VALUES ($1, $2, $3, $4) RETURNING id, budgetid, date, description, amount",

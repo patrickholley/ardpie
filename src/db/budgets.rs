@@ -18,11 +18,6 @@ struct NewBudget {
     settings: serde_json::Value,
 }
 
-#[derive(Deserialize, Debug)]
-struct UserIdQuery {
-    userid: i32,
-}
-
 #[derive(Debug)]
 struct MyError;
 
@@ -59,8 +54,8 @@ impl BudgetService {
 
         let create_budget = warp::path("budgets")
             .and(warp::post())
+            .and(with_auth())
             .and(json_body())
-            .and(warp::query::<UserIdQuery>())
             .and(with_db(pool.clone()))
             .and_then(Self::handle_create_budget);
 
@@ -128,7 +123,7 @@ impl BudgetService {
         Ok(warp::reply::with_status(warp::reply::json(&budget), StatusCode::OK))
     }
 
-    async fn handle_create_budget(new_budget: NewBudget, query: UserIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn handle_create_budget(claims: Claims, new_budget: NewBudget, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         let mut tx = pool.begin().await.map_err(|_| warp::reject::custom(MyError))?;
 
         let budget = sqlx::query_as!(
@@ -144,7 +139,7 @@ impl BudgetService {
 
         sqlx::query!(
             "INSERT INTO user_budgets (userid, budgetid) VALUES ($1, $2)",
-            query.userid,
+            claims.user_id,
             budget.id
         )
             .execute(&mut *tx)

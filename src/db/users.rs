@@ -193,32 +193,64 @@ impl UserService {
     }
 
     async fn handle_login(login: LoginRequest, pool: sqlx::PgPool) -> Result<impl warp::Reply, Infallible> {
-        let result = sqlx::query!("SELECT id, name, password FROM users WHERE name = $1", login.name)
+        match sqlx::query!("SELECT id, name, password FROM users WHERE name = $1", login.name)
             .fetch_one(&pool)
-            .await;
-
-        match result {
+            .await
+        {
             Ok(record) => {
                 let hashed_password = record.password;
-                if verify(&login.password, &hashed_password).is_ok() {
-                    let claims = Claims {
-                        user_id: record.id,
-                        exp: get_expires_at(),
-                    };
-                    let secret = env::var("JWT_SECRET").expect("JWT_SECRET must be set");
-                    let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref())).unwrap();
 
-                    let login_response = LoginResponse {
-                        id: record.id,
-                        name: record.name,
-                        token,
-                    };
+                match verify(&login.password, &hashed_password) {
+                    Ok(is_valid) if is_valid => {
+                        let claims = Claims {
+                            user_id: record.id,
+                            exp: get_expires_at(),
+                        };
 
-                    return Ok(warp::reply::with_status(warp::reply::json(&login_response), StatusCode::OK));
+                        let secret = match env::var("JWT_SECRET") {
+                            Ok(secret) => secret,
+                            Err(err) => {
+                                let error_detail = format!("JWT_SECRET not set: {}", err);
+                                return Ok(warp::reply::with_status(
+                                    warp::reply::json(&json!({"error": "Internal server error", "details": error_detail})),
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                ));
+                            }
+                        };
+
+                        let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()));
+                        let token = match token {
+                            Ok(token) => token,
+                            Err(err) => {
+                                let error_detail = format!("Error encoding token: {}", err);
+                                return Ok(warp::reply::with_status(
+                                    warp::reply::json(&json!({"error": "Internal server error", "details": error_detail})),
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                ));
+                            }
+                        };
+
+                        let login_response = LoginResponse {
+                            id: record.id,
+                            name: record.name,
+                            token,
+                        };
+
+                        Ok(warp::reply::with_status(warp::reply::json(&login_response), StatusCode::OK))
+                    },
+                    _ => Ok(warp::reply::with_status(
+                        warp::reply::json(&json!({"error": "Invalid credentials"})),
+                        StatusCode::UNAUTHORIZED,
+                    )),
                 }
-                Ok(warp::reply::with_status(warp::reply::json(&json!({"error": "Invalid credentials"})), StatusCode::UNAUTHORIZED))
             }
-            _ => Ok(warp::reply::with_status(warp::reply::json(&json!({"error": "Invalid credentials"})), StatusCode::UNAUTHORIZED))
+            Err(err) => {
+                let error_detail = format!("Database error: {}", err);
+                Ok(warp::reply::with_status(
+                    warp::reply::json(&json!({"error": "Invalid credentials", "details": error_detail})),
+                    StatusCode::UNAUTHORIZED,
+                ))
+            }
         }
     }
 }
@@ -227,5 +259,5 @@ fn get_expires_at() -> usize {
     use std::time::{SystemTime, UNIX_EPOCH, Duration};
     let start = SystemTime::now();
     let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-    (since_the_epoch + Duration::from_secs(60 * 60)).as_secs() as usize
+    (since_the_epoch + Duration::from_secs(90 * 24 * 60 * 60)).as_secs() as usize
 }

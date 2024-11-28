@@ -6,11 +6,12 @@ use std::env;
 use dotenv::dotenv;
 use db::{budgets, expenses, users, user_budgets};
 use warp::Filter;
+use env_logger::Env;
 
 #[tokio::main]
 async fn main() {
     dotenv().ok();
-    env_logger::init();
+    env_logger::init_from_env(Env::default().default_filter_or("info"));
     let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| {
         "postgres://trickyaudin@localhost:5432/ardcheese".to_string()
     });

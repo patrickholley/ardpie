@@ -2,7 +2,7 @@ use warp::{Filter};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
-use crate::utils::{json_body, with_db};
+use crate::utils::{json_body, with_db, ServiceError};
 use bcrypt::{hash, verify};
 use jsonwebtoken::{encode, Header, EncodingKey};
 use warp::http::StatusCode;
@@ -42,11 +42,6 @@ struct LoginResponse {
     token: String,
 }
 
-#[derive(Debug)]
-struct MyError;
-
-impl warp::reject::Reject for MyError {}
-
 pub struct UserService {
     pool: sqlx::PgPool,
 }
@@ -62,7 +57,7 @@ impl UserService {
         UserService { pool }
     }
 
-    pub fn routes(&self) -> impl Filter<Extract = impl warp::Reply, Error = warp::Rejection> + Clone {
+    pub fn routes(&self) -> impl Filter<Extract=impl warp::Reply, Error=warp::Rejection> + Clone {
         let pool = self.pool.clone();
 
         let create_user = warp::path("users")
@@ -97,23 +92,28 @@ impl UserService {
     }
 
     async fn handle_create_user(new_user: NewUser, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let hashed_password = hash(&new_user.password, 4).map_err(|_| warp::reject::custom(MyError))?;
+        let hashed_password = hash(&new_user.password, 4).map_err(|_| {
+            warp::reject::custom(ServiceError::BadRequest("Hashing error".into()))
+        })?;
 
         let user = sqlx::query!(
-        "INSERT INTO users (name, password) VALUES ($1, $2) RETURNING id, name",
-        new_user.name,
-        hashed_password
-    )
+            "INSERT INTO users (name, password) VALUES ($1, $2) RETURNING id, name",
+            new_user.name,
+            hashed_password
+        )
             .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|err| warp::reject::custom(ServiceError::DatabaseError(err)))?;
 
-        let user_response = UserResponse {
+        let token = Self::generate_token(user.id)?;
+
+        let login_response = LoginResponse {
             id: user.id,
             name: user.name,
+            token,
         };
 
-        Ok(warp::reply::with_status(warp::reply::json(&user_response), StatusCode::CREATED))
+        Ok(warp::reply::with_status(warp::reply::json(&login_response), StatusCode::CREATED))
     }
 
     async fn handle_update_user(id: i32, claims: Claims, new_user: NewUser, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
@@ -124,17 +124,19 @@ impl UserService {
             ));
         }
 
-        let hashed_password = hash(&new_user.password, 4).map_err(|_| warp::reject::custom(MyError))?;
+        let hashed_password = hash(&new_user.password, 4).map_err(|_| {
+            warp::reject::custom(ServiceError::BadRequest("Hashing error".into()))
+        })?;
 
         let user = sqlx::query!(
-        "UPDATE users SET name = $1, password = $2 WHERE id = $3 RETURNING id, name",
-        new_user.name,
-        hashed_password,
-        id
-    )
-            .fetch_one(& pool)
+            "UPDATE users SET name = $1, password = $2 WHERE id = $3 RETURNING id, name",
+            new_user.name,
+            hashed_password,
+            id
+        )
+            .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|err| warp::reject::custom(ServiceError::DatabaseError(err)))?;
 
         let user_response = UserResponse {
             id: user.id,
@@ -156,7 +158,7 @@ impl UserService {
         let budgetids: Vec<i32> = sqlx::query!("SELECT budgetid FROM user_budgets WHERE userid = $1", id)
             .fetch_all(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?
+            .map_err(|err| warp::reject::custom(ServiceError::DatabaseError(err)))?
             .into_iter()
             .map(|record| record.budgetid)
             .collect();
@@ -166,7 +168,7 @@ impl UserService {
             sqlx::query!("DELETE FROM expenses WHERE budgetid = $1", budgetid)
                 .execute(&pool)
                 .await
-                .map_err(|_|  warp::reject::custom(MyError))?;
+                .map_err(|err| warp::reject::custom(ServiceError::DatabaseError(err)))?;
         }
 
         // Step 3: Delete budget from budgets table
@@ -174,20 +176,20 @@ impl UserService {
             sqlx::query!("DELETE FROM budgets WHERE id = $1", budgetid)
                 .execute(&pool)
                 .await
-                .map_err(|_|  warp::reject::custom(MyError))?;
+                .map_err(|err| warp::reject::custom(ServiceError::DatabaseError(err)))?;
         }
 
         // Step 4: Delete user/budget associations from user_budgets table
         sqlx::query!("DELETE FROM user_budgets WHERE userid = $1", id)
             .execute(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|err| warp::reject::custom(ServiceError::DatabaseError(err)))?;
 
         // Step 5: Delete user from users table
         sqlx::query!("DELETE FROM users WHERE id = $1", id)
             .execute(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|err| warp::reject::custom(ServiceError::DatabaseError(err)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&format!("User with id {} deleted", id)), StatusCode::OK))
     }
@@ -198,45 +200,36 @@ impl UserService {
             .await
         {
             Ok(record) => {
-                let hashed_password = record.password;
+                let hashed_password = if !record.password.is_empty() {
+                    &record.password
+                } else {
+                    // Fallback to empty or error case if necessary
+                    ""
+                };
 
                 match verify(&login.password, &hashed_password) {
                     Ok(is_valid) if is_valid => {
-                        let claims = Claims {
-                            user_id: record.id,
-                            exp: get_expires_at(),
-                        };
+                        match Self::generate_token(record.id) {
+                            Ok(token) => {
+                                let login_response = LoginResponse {
+                                    id: record.id,
+                                    name: record.name,
+                                    token,
+                                };
 
-                        let secret = match env::var("JWT_SECRET") {
-                            Ok(secret) => secret,
+                                Ok(warp::reply::with_status(
+                                    warp::reply::json(&login_response),
+                                    StatusCode::OK,
+                                ))
+                            }
                             Err(err) => {
-                                let error_detail = format!("JWT_SECRET not set: {}", err);
-                                return Ok(warp::reply::with_status(
+                                let error_detail = format!("Database error: {:?}", err);
+                                Ok(warp::reply::with_status(
                                     warp::reply::json(&json!({"error": "Internal server error", "details": error_detail})),
                                     StatusCode::INTERNAL_SERVER_ERROR,
-                                ));
+                                ))
                             }
-                        };
-
-                        let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()));
-                        let token = match token {
-                            Ok(token) => token,
-                            Err(err) => {
-                                let error_detail = format!("Error encoding token: {}", err);
-                                return Ok(warp::reply::with_status(
-                                    warp::reply::json(&json!({"error": "Internal server error", "details": error_detail})),
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                ));
-                            }
-                        };
-
-                        let login_response = LoginResponse {
-                            id: record.id,
-                            name: record.name,
-                            token,
-                        };
-
-                        Ok(warp::reply::with_status(warp::reply::json(&login_response), StatusCode::OK))
+                        }
                     },
                     _ => Ok(warp::reply::with_status(
                         warp::reply::json(&json!({"error": "Invalid credentials"})),
@@ -253,11 +246,26 @@ impl UserService {
             }
         }
     }
-}
 
-fn get_expires_at() -> usize {
-    use std::time::{SystemTime, UNIX_EPOCH, Duration};
-    let start = SystemTime::now();
-    let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
-    (since_the_epoch + Duration::from_secs(90 * 24 * 60 * 60)).as_secs() as usize
+    fn generate_token(user_id: i32) -> Result<String, warp::Rejection> {
+        let claims = Claims {
+            user_id,
+            exp: Self::get_expires_at(),
+        };
+        let secret = env::var("JWT_SECRET").map_err(|_| {
+            warp::reject::custom(ServiceError::InternalServerError)
+        })?;
+        let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(secret.as_ref()))
+            .map_err(|_| {
+                warp::reject::custom(ServiceError::InternalServerError)
+            })?;
+        Ok(token)
+    }
+
+    fn get_expires_at() -> usize {
+        use std::time::{SystemTime, UNIX_EPOCH, Duration};
+        let start = SystemTime::now();
+        let since_the_epoch = start.duration_since(UNIX_EPOCH).expect("Time went backwards");
+        (since_the_epoch + Duration::from_secs(90 * 24 * 60 * 60)).as_secs() as usize
+    }
 }

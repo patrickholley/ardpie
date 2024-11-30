@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use warp::{Filter, http::StatusCode};
-use crate::utils::{json_body, with_db};
+use crate::utils::{json_body, with_db, user_owns_budget, ServiceError};
 use crate::auth::{with_auth, Claims};
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -17,11 +17,6 @@ struct NewBudget {
     name: String,
     settings: serde_json::Value,
 }
-
-#[derive(Debug)]
-struct MyError;
-
-impl warp::reject::Reject for MyError {}
 
 pub struct BudgetService {
     pool: sqlx::PgPool,
@@ -90,21 +85,13 @@ impl BudgetService {
         )
             .fetch_all(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&budgets), StatusCode::OK))
     }
 
     async fn handle_get_budget(id: i32, claims: Claims, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let user_budget = sqlx::query!(
-            "SELECT userid FROM user_budgets WHERE budgetid = $1",
-            id
-        )
-            .fetch_one(&pool)
-            .await
-            .map_err(|_| warp::reject::custom(MyError))?;
-
-        if user_budget.userid != claims.user_id {
+        if !user_owns_budget(claims.user_id, id, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
@@ -118,13 +105,13 @@ impl BudgetService {
         )
             .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&budget), StatusCode::OK))
     }
 
     async fn handle_create_budget(claims: Claims, new_budget: NewBudget, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let mut tx = pool.begin().await.map_err(|_| warp::reject::custom(MyError))?;
+        let mut tx = pool.begin().await.map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         let budget = sqlx::query_as!(
             Budget,
@@ -135,7 +122,7 @@ impl BudgetService {
         )
             .fetch_one(&mut *tx)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         sqlx::query!(
             "INSERT INTO user_budgets (userid, budgetid) VALUES ($1, $2)",
@@ -144,23 +131,15 @@ impl BudgetService {
         )
             .execute(&mut *tx)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
-        tx.commit().await.map_err(|_| warp::reject::custom(MyError))?;
+        tx.commit().await.map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&budget), StatusCode::CREATED))
     }
 
     async fn handle_update_budget(id: i32, claims: Claims, new_budget: NewBudget, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let user_budget = sqlx::query!(
-            "SELECT userid FROM user_budgets WHERE budgetid = $1",
-            id
-        )
-            .fetch_one(&pool)
-            .await
-            .map_err(|_| warp::reject::custom(MyError))?;
-
-        if user_budget.userid != claims.user_id {
+        if !user_owns_budget(claims.user_id, id, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
@@ -177,45 +156,37 @@ impl BudgetService {
         )
             .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&budget), StatusCode::OK))
     }
 
     async fn handle_delete_budget(id: i32, claims: Claims, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        let user_budget = sqlx::query!(
-            "SELECT userid FROM user_budgets WHERE budgetid = $1",
-            id
-        )
-            .fetch_one(&pool)
-            .await
-            .map_err(|_| warp::reject::custom(MyError))?;
-
-        if user_budget.userid != claims.user_id {
+        if !user_owns_budget(claims.user_id, id, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
             ));
         }
 
-        let mut tx = pool.begin().await.map_err(|_| warp::reject::custom(MyError))?;
+        let mut tx = pool.begin().await.map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         sqlx::query!("DELETE FROM expenses WHERE budgetid = $1", id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         sqlx::query!("DELETE FROM user_budgets WHERE budgetid = $1", id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         sqlx::query!("DELETE FROM budgets WHERE id = $1", id)
             .execute(&mut *tx)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
-        tx.commit().await.map_err(|_| warp::reject::custom(MyError))?;
+        tx.commit().await.map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&format!("Budget with id {} deleted", id)), StatusCode::OK))
     }

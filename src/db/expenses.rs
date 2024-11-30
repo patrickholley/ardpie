@@ -1,6 +1,6 @@
 use warp::{Filter, http::StatusCode};
 use sqlx::postgres::PgPoolOptions;
-use crate::utils::{json_body, with_db};
+use crate::utils::{json_body, with_db, user_owns_budget, ServiceError};
 use serde::{Deserialize, Serialize};
 use bigdecimal::BigDecimal;
 use time::Date;
@@ -29,11 +29,6 @@ struct NewExpense {
     amount: BigDecimal,
 }
 
-#[derive(Debug)]
-struct MyError;
-
-impl warp::reject::Reject for MyError {}
-
 pub struct ExpenseService {
     pool: sqlx::PgPool,
 }
@@ -53,9 +48,8 @@ impl ExpenseService {
         let pool = self.pool.clone();
 
         let get_expenses_total = warp::path!("expenses" / "total")
-            .and(warp::get())
-            .and(with_auth())
             .and(warp::query::<BudgetIdQuery>())
+            .and(with_auth())
             .and(with_db(pool.clone()))
             .and_then(Self::handle_get_expenses_total);
 
@@ -100,8 +94,12 @@ impl ExpenseService {
             .or(delete_expense)
     }
 
-    async fn handle_get_expenses_total(claims: Claims, query: BudgetIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        if !Self::user_owns_budget(claims.user_id, query.budgetid, &pool).await? {
+    async fn handle_get_expenses_total(
+        query: BudgetIdQuery,
+        claims: Claims,
+        pool: sqlx::PgPool
+    ) -> Result<impl warp::Reply, warp::Rejection> {
+        if !user_owns_budget(claims.user_id, query.budgetid, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
@@ -111,7 +109,7 @@ impl ExpenseService {
         let result = sqlx::query!("SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE budgetid = $1", query.budgetid)
             .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         let total: BigDecimal = result.total.unwrap_or_else(|| BigDecimal::from(0));
 
@@ -119,7 +117,7 @@ impl ExpenseService {
     }
 
     async fn handle_get_expenses(claims: Claims, query: BudgetIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        if !Self::user_owns_budget(claims.user_id, query.budgetid, &pool).await? {
+        if !user_owns_budget(claims.user_id, query.budgetid, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
@@ -129,7 +127,7 @@ impl ExpenseService {
         let expenses = sqlx::query_as!(Expense, "SELECT * FROM expenses WHERE budgetid = $1", query.budgetid)
             .fetch_all(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&expenses), StatusCode::OK))
     }
@@ -138,9 +136,9 @@ impl ExpenseService {
         let expense = sqlx::query_as!(Expense, "SELECT * FROM expenses WHERE id = $1", id)
             .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
-        if !Self::user_owns_budget(claims.user_id, expense.budgetid, &pool).await? {
+        if !user_owns_budget(claims.user_id, expense.budgetid, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
@@ -151,7 +149,7 @@ impl ExpenseService {
     }
 
     async fn handle_create_expense(claims: Claims, new_expense: NewExpense, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        if !Self::user_owns_budget(claims.user_id, new_expense.budgetid, &pool).await? {
+        if !user_owns_budget(claims.user_id, new_expense.budgetid, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
@@ -168,13 +166,13 @@ impl ExpenseService {
         )
             .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&expense), StatusCode::CREATED))
     }
 
     async fn handle_update_expense(id: i32, claims: Claims, new_expense: NewExpense, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
-        if !Self::user_owns_budget(claims.user_id, new_expense.budgetid, &pool).await? {
+        if !user_owns_budget(claims.user_id, new_expense.budgetid, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
@@ -192,7 +190,7 @@ impl ExpenseService {
         )
             .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&expense), StatusCode::OK))
     }
@@ -201,9 +199,9 @@ impl ExpenseService {
         let expense = sqlx::query_as!(Expense, "SELECT * FROM expenses WHERE id = $1", id)
             .fetch_one(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
-        if !Self::user_owns_budget(claims.user_id, expense.budgetid, &pool).await? {
+        if !user_owns_budget(claims.user_id, expense.budgetid, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
                 StatusCode::UNAUTHORIZED,
@@ -213,21 +211,10 @@ impl ExpenseService {
         sqlx::query!("DELETE FROM expenses WHERE id = $1", id)
             .execute(&pool)
             .await
-            .map_err(|_| warp::reject::custom(MyError))?;
+            .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
 
         Ok(warp::reply::with_status(warp::reply::json(&format!("Expense with id {} deleted", id)), StatusCode::OK))
     }
 
-    async fn user_owns_budget(user_id: i32, budget_id: i32, pool: &sqlx::PgPool) -> Result<bool, warp::Rejection> {
-        let result = sqlx::query!(
-            "SELECT 1 as exists FROM user_budgets WHERE userid = $1 AND budgetid = $2",
-            user_id,
-            budget_id
-        )
-            .fetch_optional(pool)
-            .await
-            .map_err(|_| warp::reject::custom(MyError))?;
 
-        Ok(result.is_some())
-    }
 }

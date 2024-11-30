@@ -12,6 +12,13 @@ struct BudgetIdQuery {
     budgetid: i32,
 }
 
+#[derive(Deserialize, Debug)]
+struct GetExpenseQuery {
+    budgetid: i32,
+    start_date: Date,
+    end_date: Option<Date>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Expense {
     id: i32,
@@ -56,7 +63,7 @@ impl ExpenseService {
         let get_expenses = warp::path("expenses")
             .and(warp::get())
             .and(with_auth())
-            .and(warp::query::<BudgetIdQuery>())
+            .and(warp::query::<GetExpenseQuery>())
             .and(with_db(pool.clone()))
             .and_then(Self::handle_get_expenses);
 
@@ -116,7 +123,7 @@ impl ExpenseService {
         Ok(warp::reply::with_status(warp::reply::json(&total), StatusCode::OK))
     }
 
-    async fn handle_get_expenses(claims: Claims, query: BudgetIdQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
+    async fn handle_get_expenses(claims: Claims, query: GetExpenseQuery, pool: sqlx::PgPool) -> Result<impl warp::Reply, warp::Rejection> {
         if !user_owns_budget(claims.user_id, query.budgetid, &pool, ServiceError::Unauthorized).await? {
             return Ok(warp::reply::with_status(
                 warp::reply::json(&json!({"error": "Unauthorized"})),
@@ -124,7 +131,19 @@ impl ExpenseService {
             ));
         }
 
-        let expenses = sqlx::query_as!(Expense, "SELECT * FROM expenses WHERE budgetid = $1", query.budgetid)
+        let expenses = sqlx::query_as!(
+                Expense,
+                r#"
+                SELECT * FROM expenses
+                WHERE budgetid = $1
+                  AND date >= $2
+                  AND ($3::DATE IS NULL OR date <= $3)
+                ORDER BY date DESC
+                "#,
+                query.budgetid,
+                query.start_date,
+                query.end_date
+            )
             .fetch_all(&pool)
             .await
             .map_err(|e| warp::reject::custom(ServiceError::DatabaseError(e)))?;
